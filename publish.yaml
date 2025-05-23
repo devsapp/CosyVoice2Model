@@ -1,0 +1,75 @@
+Edition: 3.0.0
+Type: Project
+Name: CosyVoice2-Model
+Version: dev
+Provider:
+  - 阿里云 # 取值内容参考：https://api.devsapp.cn/v3/common/args.html
+Description: 托管 CosyVoice2-0.5B 模型
+
+Tags: #标签详情
+  - 部署函数
+Category: 人工智能 # 取值内容参考：https://api.devsapp.cn/v3/common/args.html
+Service: # 使用的服务
+  函数计算: # 取值内容参考：https://api.devsapp.cn/v3/common/args.html
+    Authorities: #权限描述
+      - AliyunFCFullAccess # 所需要的权限
+
+Organization: 阿里云函数计算（FC） # 所属组织
+Effective: Public # 是否公开，取值：Public，Private，Organization
+
+Parameters:
+  type: object
+  additionalProperties: false # 不允许增加其他属性
+  required: # 必填项
+    - region
+    - gpu
+    - oss_role_arn
+    - oss_bucket
+  properties:
+    region:
+      title: 地域
+      type: string
+      default: cn-hangzhou
+      description: 创建应用所在的地区
+      enum:
+        - cn-hangzhou
+        - cn-shanghai
+        - cn-beijing
+
+    name:
+      title: 名称
+      type: string
+      default: cosyvoice2-model-${default-suffix}
+      description: CosyVoice2 模型名称
+
+    gpu:
+      title: 显卡类型
+      type: string
+      default: fc.gpu.ada.1
+      description: 显卡类型（默认会为您选择对应规格最大配置的机器）
+      enum:
+        - fc.gpu.ada.1
+        - fc.gpu.tesla.1
+
+    # OSS 
+    oss_role_arn:
+      title: OSS 角色
+      type: string
+      default: ""
+      pattern: "^acs:ram::[0-9]*:role/.*$"
+      description: "OSS 所需角色，支持模型导入 OSS 中的音频文件"
+      required: true
+      x-role:
+        name: oss-default-role
+        service: FC
+        authorities:
+          - AliyunOSSFullAccess
+
+    oss_bucket:
+      title: OSS BucketName
+      type: string
+      description: 存储桶名称，到 OSS 控制台获取，例如：bucket-name"
+      required: true
+      x-bucket:
+        dependency:
+          - region

@@ -1,0 +1,63 @@
+edition: 3.0.0 #  命令行YAML规范版本，遵循语义化版本（Semantic Versioning）规范
+name: cosyvoice2 # 应用名称
+access: {{ access }}
+vars:
+  region: {{ region }}
+  functionName: {{ name}}
+  gpu: {{ gpu }}
+  imageUrl: "cap-demo-public-registry.cn-hangzhou.cr.aliyuncs.com/cap-app/cosyvoice2-model:v1"
+  bucketName: "{{ oss_bucket }}"
+  bucketEndpoint: "oss-{{region}}.aliyuncs.com"
+  
+resources:
+  cosyvoice2:
+    component: model
+    props:
+      region: ${vars.region}
+      name: '${vars.functionName}'
+      description: 'cosyvoice2 model'
+      logConfig: auto
+      ossMountConfig:
+        mountPoints:
+          - bucketName: ${vars.bucketName}
+            endpoint: ${vars.bucketEndpoint}
+            bucketPath: ''
+            mountDir: /mnt/oss
+            readOnly: false
+
+      modelConfig:
+        sourceType: custom-container
+
+      # 实例规格
+      timeout: 600
+      diskSize: 512
+      cpu: 8
+      memorySize: {{ if gpu === 'fc.gpu.ada.1'}}65536{{ else }}32768{{/if}}
+      instanceConcurrency: 100
+      gpuConfig:
+        gpuMemorySize: {{ if gpu === 'fc.gpu.ada.1'}}49152{{ else }}16384{{/if}}
+        gpuType: '${vars.gpu}'
+      provisionConfig:
+        target: 1
+        alwaysAllocateGPU: false
+
+      # 运行时
+      runtime: custom-container
+      customContainerConfig:
+        port: 8000
+        image: ${vars.imageUrl} 
+        instanceConcurrency: 10
+        role: {{ oss_role_arn }}
+        command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+        webServerMode: true
+        # 暂时性解决 updatefunction 不支持 acree 的问题
+        registryConfig:
+          certConfig:
+            insecure: false
+      environmentVariables:
+        USE_FLOW_CACHE: true
+        LOAD_TRT: "{{ if gpu === 'fc.gpu.ada.1'}}true{{ else }}false{{/if}}"
+        LOAD_JIT: false,
+        FP16: false,
+
+      httpTrigger: auto
