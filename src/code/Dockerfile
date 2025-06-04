@@ -63,7 +63,6 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
 
 # 添加 webui.py 脚本
 COPY app.py /workspace/CosyVoice/
-COPY voices voices/
 
 ENV MODEL_DIR="pretrained_models/SenseVoiceSmall"
 

@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 import io
+from functools import lru_cache
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -18,37 +19,39 @@ logger = logging.getLogger(__name__)
 # 从环境变量获取配置
 MODEL_PATH = os.environ.get('MODEL_PATH', 'pretrained_models/CosyVoice2-0.5B')
 LOAD_JIT = os.environ.get('LOAD_JIT', 'False').lower() == 'true'
-# LOAD_TRT = os.environ.get('LOAD_TRT', 'False').lower() == 'true'
 FP16 = os.environ.get('FP16', 'False').lower() == 'true'
-# USE_FLOW_CACHE = os.environ.get('USE_FLOW_CACHE', 'False').lower() == 'true'
 DEFAULT_PROMPT_AUDIO = os.environ.get('DEFAULT_PROMPT_AUDIO', './asset/default_prompt.wav')
 
 app = FastAPI()
 
+@lru_cache(maxsize=1000)
 def postprocess(speech, top_db=60, hop_length=220, win_length=440):
     speech, _ = librosa.effects.trim(
-        speech, top_db=top_db,
+        speech.numpy().squeeze(), top_db=top_db,
         frame_length=win_length,
         hop_length=hop_length
     )
+    speech = torch.from_numpy(speech).unsqueeze(0)
     if speech.abs().max() > 0.8:
         speech = speech / speech.abs().max() * 0.8
-    speech = torch.concat([speech, torch.zeros(1, int(16000 * 0.2))], dim=1)
+    speech = torch.cat([speech, torch.zeros(1, int(16000 * 0.2))], dim=1)
     return speech
 
+@lru_cache(maxsize=100)
 def load_wav(file_path, sr):
-    wav, _ = torchaudio.load(file_path)
+    wav, orig_sr = torchaudio.load(file_path)
     if wav.size(0) > 1:
         wav = wav.mean(dim=0, keepdim=True)
-    if _ != sr:
-        wav = torchaudio.functional.resample(wav, _, sr)
+    if orig_sr != sr:
+        wav = torchaudio.functional.resample(wav, orig_sr, sr)
     return wav
 
 def set_all_random_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 class TTSRequest(BaseModel):
     text: str = Field(..., description="要合成的文本")
@@ -108,11 +111,13 @@ class TTS:
         self.default_prompt_audio = default_prompt_audio
         logger.info("Model loaded successfully")
 
+    @torch.no_grad()
     def process_audio(self, audio_path):
         prompt_sr = 16000  # 设置目标采样率
         prompt_speech_16k = postprocess(load_wav(audio_path, prompt_sr))
         return prompt_speech_16k
 
+    @torch.no_grad()
     def generate_stream(self, request: TTSRequest):
         """流式推理"""
         try:    
@@ -179,6 +184,7 @@ class TTS:
             logger.error(f"Stream generation error: {str(e)}")  
             raise   
 
+    @torch.no_grad()
     async def generate_non_stream(self, request: TTSRequest) -> bytes:
         """非流式推理"""
         try:
@@ -246,6 +252,7 @@ tts_non_stream = TTS(
     use_flow_cache=False,
     default_prompt_audio=DEFAULT_PROMPT_AUDIO
 )
+
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
     try:
@@ -284,9 +291,7 @@ async def health_check():
         "config": {
             "model_path": MODEL_PATH,
             "load_jit": LOAD_JIT,
-            # "load_trt": LOAD_TRT,
             "fp16": FP16,
-            # "use_flow_cache": USE_FLOW_CACHE,
             "default_prompt_audio": DEFAULT_PROMPT_AUDIO
         }
     }
@@ -297,9 +302,7 @@ if __name__ == "__main__":
     logger.info("Starting server with configuration:")
     logger.info(f"MODEL_PATH: {MODEL_PATH}")
     logger.info(f"LOAD_JIT: {LOAD_JIT}")
-    # logger.info(f"LOAD_TRT: {LOAD_TRT}")
     logger.info(f"FP16: {FP16}")
-    # logger.info(f"USE_FLOW_CACHE: {USE_FLOW_CACHE}")
     logger.info(f"DEFAULT_PROMPT_AUDIO: {DEFAULT_PROMPT_AUDIO}")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
