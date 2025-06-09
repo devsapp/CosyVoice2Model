@@ -36,11 +36,16 @@ WORKDIR /workspace
 
 ENV PYTHONPATH="${PYTHONPATH}:/workspace/CosyVoice:/workspace/CosyVoice/third_party/Matcha-TTS"
 
-RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git
+RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git && \
+    cd CosyVoice && \
+    git pull && \
+    git submodule update --init --recursive
 
 RUN conda run -n ${VENV} conda install -y -c conda-forge pynini==2.1.5
 COPY requirements.txt /workspace/
 RUN conda run -n ${VENV} pip install -r /workspace/requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+RUN conda run -n ${VENV} pip install torch==2.7.0 torchaudio==2.7.0
+RUN conda run -n ${VENV} pip install vllm==0.9.0
 
 # 安装 funasr
 RUN conda run -n ${VENV} pip install funasr
@@ -62,11 +67,11 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     unzip resource.zip -d .
 
 # 添加 webui.py 脚本
-COPY app.py /workspace/CosyVoice/
-COPY voices voices/
+COPY vllm_example.py /workspace/CosyVoice/
 
 ENV MODEL_DIR="pretrained_models/SenseVoiceSmall"
 
+RUN touch /workspace/CosyVoice/cosyvoice/vllm/__init__.py
 # 设置默认命令
-CMD ["python3", "app.py", "--port", "8000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
+CMD ["python3", "vllm_example.py", "--port", "8000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
 # CMD ["python3", "webui.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
