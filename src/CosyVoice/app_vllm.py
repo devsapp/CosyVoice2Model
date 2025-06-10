@@ -58,7 +58,6 @@ def text_to_speech(request: TTSRequest):
         def generate(is_stream):
             audio_data = None
             chunk_num = 0
-            wav_header_sent = False
 
             inference_generator = None
             if request.mode == "zero_shot":
@@ -87,35 +86,15 @@ def text_to_speech(request: TTSRequest):
             else:
                 raise ValueError(f"Unsupported mode: {request.mode}")
 
-            # 收集所有音频数据用于计算总长度
-            all_chunks = []
             for chunk in inference_generator:
                 chunk_num += 1
                 if is_stream:
-                    audio_chunk = chunk['tts_speech']
-                    all_chunks.append(audio_chunk)
-                    
-                    if not wav_header_sent:
-                        # 计算总长度
-                        total_length = sum(c.size(1) for c in all_chunks)
-                        # 创建完整WAV文件的缓冲区
-                        buffer = io.BytesIO()
-                        # 保存完整的音频（包含WAV头）
-                        combined_audio = torch.cat(all_chunks, dim=1)
-                        torchaudio.save(buffer, combined_audio, cosyvoice.sample_rate, format='wav')
-                        # 获取WAV头
-                        wav_header = buffer.getvalue()[:44]
-                        yield wav_header
-                        wav_header_sent = True
-                        # 只发送第一个chunk的音频数据
-                        yield buffer.getvalue()[44:]
-                    else:
-                        # 直接发送音频数据，不含WAV头
-                        buffer = io.BytesIO()
-                        torchaudio.save(buffer, audio_chunk, cosyvoice.sample_rate, format='wav')
-                        yield buffer.getvalue()[44:]  # 跳过WAV头
+                    # 立即返回每个音频块
+                    buffer = io.BytesIO()
+                    torchaudio.save(buffer, chunk['tts_speech'], cosyvoice.sample_rate, format='wav')
+                    yield buffer.getvalue()
                 else:
-                    # 非流式模式
+                    # 累积音频数据
                     audio_data = torch.cat([audio_data, chunk['tts_speech']], dim=1) if audio_data is not None else chunk['tts_speech']
 
             if not is_stream and audio_data is not None:
