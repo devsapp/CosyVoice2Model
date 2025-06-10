@@ -16,6 +16,10 @@ import io
 import torch
 import traceback
 import torchaudio
+import numpy as np
+import requests
+import tempfile
+from urllib.parse import urlparse
 
 app = FastAPI()
 
@@ -34,6 +38,10 @@ class TTSRequest(BaseModel):
     instruct_text: Optional[str] = ""
     speed: float = 1.0
     stream: bool = False
+    output_format: str = "wav"  # pcm, wav, mp3
+    audio_quality: Optional[int] = None  # MP3质量 (0-9)
+    sample_rate: Optional[int] = None
+    channels: int = 1
 
     @validator('speed')
     def check_speed(cls, v):
@@ -46,19 +54,106 @@ class TTSRequest(BaseModel):
         if v not in ["zero_shot", "cross_lingual", "instruct2"]:
             raise ValueError('Invalid mode')
         return v
+    
+    @validator('output_format')
+    def check_format(cls, v):
+        if v not in ["pcm", "wav", "mp3"]:
+            raise ValueError('Unsupported audio format')
+        return v
+
+    @validator('audio_quality')
+    def check_quality(cls, v):
+        if v is not None and (v < 0 or v > 9):
+            raise ValueError('Audio quality must be between 0 and 9')
+        return v
+
+def convert_to_format(audio_tensor, format, sample_rate, channels, quality=None):
+    """转换音频格式"""
+    if format == "pcm":
+        # 转换为PCM格式
+        if channels == 2 and audio_tensor.size(0) == 1:
+            audio_tensor = audio_tensor.repeat(2, 1)
+        # 转换为16位整数PCM
+        audio_array = (audio_tensor * 32767).numpy().astype(np.int16)
+        return audio_array.tobytes()
+    else:
+        # WAV或MP3格式
+        buffer = io.BytesIO()
+        if channels == 2 and audio_tensor.size(0) == 1:
+            audio_tensor = audio_tensor.repeat(2, 1)
+        
+        if format == "mp3" and quality is not None:
+            torchaudio.save(buffer, audio_tensor, sample_rate, format='mp3', compression=quality)
+        else:
+            torchaudio.save(buffer, audio_tensor, sample_rate, format=format)
+        
+        return buffer.getvalue()
+
+def download_audio_file(url: str, timeout: int = 30, max_size: int = 10 * 1024 * 1024):
+    """下载音频文件并进行验证"""
+    try:
+        # 验证 URL
+        parsed_url = urlparse(url)
+        if not all([parsed_url.scheme, parsed_url.netloc]):
+            raise ValueError("Invalid URL")
+
+        # 下载文件，带进度和大小限制
+        response = requests.get(
+            url, 
+            timeout=timeout,
+            stream=True,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        response.raise_for_status()
+
+        # 检查内容类型
+        content_type = response.headers.get('Content-Type', '')
+        if not content_type.startswith('audio/'):
+            logger.warning(f"Unexpected content type: {content_type}, but continuing anyway")
+
+        # 检查文件大小
+        content_length = int(response.headers.get('Content-Length', 0))
+        if content_length > max_size:
+            raise ValueError(f"File too large: {content_length} bytes")
+
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    temp_file.write(chunk)
+            return temp_file.name
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error downloading audio file: {str(e)}"
+        )
 
 @app.post("/tts")
 def text_to_speech(request: TTSRequest):
+    temp_file = None
     try:
-        if not os.path.exists(request.prompt_audio_path):
-            raise HTTPException(status_code=400, detail="Prompt audio file not found")
-        
-        prompt_speech_16k = load_wav(request.prompt_audio_path, 16000)
+        # 处理音频文件路径
+        if request.prompt_audio_path.startswith(('http://', 'https://')):
+            try:
+                logger.info(f"Downloading audio from URL: {request.prompt_audio_path}")
+                temp_file = download_audio_file(request.prompt_audio_path)
+                prompt_speech_16k = load_wav(temp_file, 16000)
+                logger.info("Successfully loaded prompt audio from URL")
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error processing prompt audio file: {str(e)}"
+                )
+        else:
+            if not os.path.exists(request.prompt_audio_path):
+                raise HTTPException(status_code=400, detail="Prompt audio file not found")
+            prompt_speech_16k = load_wav(request.prompt_audio_path, 16000)
 
         def generate(is_stream):
             audio_data = None
             chunk_num = 0
-            wav_header_sent = False
+            header_sent = False
 
             inference_generator = None
             if request.mode == "zero_shot":
@@ -87,54 +182,81 @@ def text_to_speech(request: TTSRequest):
             else:
                 raise ValueError(f"Unsupported mode: {request.mode}")
 
-            # 收集所有音频数据用于计算总长度
-            all_chunks = []
+            sample_rate = request.sample_rate or cosyvoice.sample_rate
+            
+            # 收集所有音频数据
             for chunk in inference_generator:
                 chunk_num += 1
                 if is_stream:
                     audio_chunk = chunk['tts_speech']
-                    all_chunks.append(audio_chunk)
                     
-                    if not wav_header_sent:
-                        # 计算总长度
-                        total_length = sum(c.size(1) for c in all_chunks)
-                        # 创建完整WAV文件的缓冲区
-                        buffer = io.BytesIO()
-                        # 保存完整的音频（包含WAV头）
-                        combined_audio = torch.cat(all_chunks, dim=1)
-                        torchaudio.save(buffer, combined_audio, cosyvoice.sample_rate, format='wav')
-                        # 获取WAV头
-                        wav_header = buffer.getvalue()[:44]
-                        yield wav_header
-                        wav_header_sent = True
-                        # 只发送第一个chunk的音频数据
-                        yield buffer.getvalue()[44:]
-                    else:
-                        # 直接发送音频数据，不含WAV头
-                        buffer = io.BytesIO()
-                        torchaudio.save(buffer, audio_chunk, cosyvoice.sample_rate, format='wav')
-                        yield buffer.getvalue()[44:]  # 跳过WAV头
+                    # 重采样（如果需要）
+                    if sample_rate != cosyvoice.sample_rate:
+                        resampler = torchaudio.transforms.Resample(
+                            cosyvoice.sample_rate, sample_rate
+                        )
+                        audio_chunk = resampler(audio_chunk)
+                    
+                    # 转换格式
+                    audio_data = convert_to_format(
+                        audio_chunk,
+                        request.output_format,
+                        sample_rate,
+                        request.channels,
+                        request.audio_quality
+                    )
+                    
+                    yield audio_data
                 else:
-                    # 非流式模式
                     audio_data = torch.cat([audio_data, chunk['tts_speech']], dim=1) if audio_data is not None else chunk['tts_speech']
 
             if not is_stream and audio_data is not None:
-                buffer = io.BytesIO()
-                torchaudio.save(buffer, audio_data, cosyvoice.sample_rate, format='wav')
-                yield buffer.getvalue()
+                # 重采样（如果需要）
+                if sample_rate != cosyvoice.sample_rate:
+                    resampler = torchaudio.transforms.Resample(
+                        cosyvoice.sample_rate, sample_rate
+                    )
+                    audio_data = resampler(audio_data)
+                
+                # 转换格式
+                final_audio = convert_to_format(
+                    audio_data,
+                    request.output_format,
+                    sample_rate,
+                    request.channels,
+                    request.audio_quality
+                )
+                
+                yield final_audio
 
             logger.info(f"Task completed, generated {chunk_num} chunks")
 
+        # 设置正确的媒体类型
+        media_types = {
+            "pcm": "audio/l16",  # 线性16位PCM
+            "wav": "audio/wav",
+            "mp3": "audio/mpeg"
+        }
+        media_type = media_types[request.output_format]
+
         if request.stream:
-            return StreamingResponse(generate(True), media_type="audio/wav")
+            return StreamingResponse(generate(True), media_type=media_type)
         else:
             audio_data = b''.join(generate(False))
-            return Response(content=audio_data, media_type="audio/wav")
+            return Response(content=audio_data, media_type=media_type)
 
     except Exception as e:
         logger.error(f"Error in text_to_speech: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # 清理临时文件
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                logger.info(f"Cleaned up temporary file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file {temp_file}: {e}")
 
 if __name__ == "__main__":
     import uvicorn
