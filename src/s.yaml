@@ -5,7 +5,7 @@ vars:
   region: {{ region }}
   functionName: {{ name}}
   gpu: {{ gpu }}
-  imageUrl: "cap-demo-public-registry.cn-hangzhou.cr.aliyuncs.com/cap-app/cosyvoice2-model:vllm-v3"
+  imageUrl: "cap-demo-public-registry.cn-hangzhou.cr.aliyuncs.com/cap-app/cosyvoice2-model:vllm-v4"
   bucketName: "{{ oss_bucket }}"
   bucketEndpoint: "https://oss-{{region}}.aliyuncs.com"
   
