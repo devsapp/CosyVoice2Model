@@ -67,11 +67,11 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     unzip resource.zip -d .
 
 # 添加 webui.py 脚本
-COPY vllm_example.py /workspace/CosyVoice/
+COPY inference_project /workspace/CosyVoice/inference_project/
 
 ENV MODEL_DIR="pretrained_models/SenseVoiceSmall"
 
 RUN touch /workspace/CosyVoice/cosyvoice/vllm/__init__.py
 # 设置默认命令
-CMD ["python3", "vllm_example.py", "--port", "8000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
+CMD ["python3", "inference_project/app.py", "--port", "8000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
 # CMD ["python3", "webui.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
