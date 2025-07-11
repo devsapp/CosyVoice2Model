@@ -69,7 +69,7 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
 # 添加 webui.py 脚本
 COPY inference_project /workspace/CosyVoice/inference_project/
 
-ENV MODEL_DIR="pretrained_models/SenseVoiceSmall"
+# ENV MODEL_DIR="pretrained_models/SenseVoiceSmall"
 
 RUN touch /workspace/CosyVoice/cosyvoice/vllm/__init__.py
 # 设置默认命令

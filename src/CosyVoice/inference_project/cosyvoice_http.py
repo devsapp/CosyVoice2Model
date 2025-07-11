@@ -25,7 +25,7 @@ class TTSRequest(BaseModel):
     speed: float = 1.0
     stream: bool = False
     output_format: str = "wav"  # pcm, wav, mp3
-    spk_id: str = ''
+    zero_shot_spk_id: str = ''
     
     # 音频编码相关参数
     bit_rate: Optional[int] = 192000        # 比特率，默认 192kbps
@@ -104,7 +104,7 @@ async def text_to_speech(request: TTSRequest):
                         prompt_speech_16k, 
                         stream=request.stream,
                         speed=request.speed,
-                        zero_shot_spk_id=request.spk_id
+                        zero_shot_spk_id=request.zero_shot_spk_id
                     )
                 elif request.mode == "cross_lingual":
                     inference_generator = model.cosyvoice_model.inference_cross_lingual(
@@ -112,7 +112,7 @@ async def text_to_speech(request: TTSRequest):
                         prompt_speech_16k,
                         stream=request.stream,
                         speed=request.speed,
-                        zero_shot_spk_id=request.spk_id
+                        zero_shot_spk_id=request.zero_shot_spk_id
                     )
                 elif request.mode == "instruct2":
                     inference_generator = model.cosyvoice_model.inference_instruct2(
@@ -121,7 +121,7 @@ async def text_to_speech(request: TTSRequest):
                         prompt_speech_16k,
                         stream=request.stream,
                         speed=request.speed,
-                        zero_shot_spk_id=request.spk_id
+                        zero_shot_spk_id=request.zero_shot_spk_id
                     )
                 else:
                     raise ValueError(f"Unsupported mode: {request.mode}")

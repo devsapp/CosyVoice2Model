@@ -38,7 +38,7 @@ class TTSParamsMessage(BaseModel):
     instruct_text: Optional[str] = ""
     speed: float = 1.0
     output_format: str = "wav"  # pcm, wav, mp3
-    spk_id: str = ''
+    zero_shot_spk_id: str = ''
     
     # 音频编码相关参数
     bit_rate: Optional[int] = 192000        # 比特率，默认 192kbps
@@ -351,7 +351,7 @@ class TTSHandler:
                         prompt_speech,
                         stream=True,
                         speed=params.speed,
-                        zero_shot_spk_id=params.spk_id
+                        zero_shot_spk_id=params.zero_shot_spk_id
                     )
                 elif params.mode == "cross_lingual":
                     inference_generator = model.cosyvoice_model.inference_cross_lingual(
@@ -359,7 +359,7 @@ class TTSHandler:
                         prompt_speech,
                         stream=True,
                         speed=params.speed,
-                        zero_shot_spk_id=params.spk_id
+                        zero_shot_spk_id=params.zero_shot_spk_id
                     )
                 elif params.mode == "instruct2":
                     inference_generator = model.cosyvoice_model.inference_instruct2(
@@ -368,7 +368,7 @@ class TTSHandler:
                         prompt_speech,
                         stream=True,
                         speed=params.speed,
-                        zero_shot_spk_id=params.spk_id
+                        zero_shot_spk_id=params.zero_shot_spk_id
                     )
                 else:
                     return self.response_builder.create_error_response(

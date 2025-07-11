@@ -16,7 +16,7 @@ class SpeakerRequest(BaseModel):
         default="希望你以后能够做的比我还好呦。",
         description="Text prompt for speaker registration"
     )
-    zero_shot_spk: str = Field(
+    zero_shot_spk_id: str = Field(
         default="my_zero_shot_spk",
         description="Speaker ID to register"
     )
@@ -66,17 +66,17 @@ async def speaker_id(request: SpeakerRequest) -> dict:
             spk_success = model.cosyvoice_model.add_zero_shot_spk(
                 request.prompt_text,
                 prompt_speech_16k,
-                request.zero_shot_spk
+                request.zero_shot_spk_id
             )
             return {
                 "spk_success": spk_success,
-                    "spk_id": request.zero_shot_spk
+                    "spk_id": request.zero_shot_spk_id
                     }
         except Exception as e:
             logger.error(f"Error registering speaker: {str(e)}")
             return {
                 "spk_success": False,
-                    "spk_id": request.zero_shot_spk
+                    "spk_id": request.zero_shot_spk_id
                     }
     
     finally:

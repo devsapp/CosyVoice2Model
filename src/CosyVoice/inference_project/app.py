@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 import uvicorn
 import model
+import os
 
 # 设置日志
 logging.basicConfig(
@@ -21,9 +22,12 @@ from cosyvoice.cli.cosyvoice import CosyVoice2
 
 ModelRegistry.register_model("CosyVoice2ForCausalLM", CosyVoice2ForCausalLM)
 
+model_dir = os.getenv('MODEL_DIR', 'pretrained_models/CosyVoice2-0.5B')
+print(model_dir)
+
 # 初始化 CosyVoice2 模型
 model.cosyvoice_model = CosyVoice2(
-    'pretrained_models/CosyVoice2-0.5B',
+    model_dir,
     load_jit=True,
     load_trt=True,
     load_vllm=True,
