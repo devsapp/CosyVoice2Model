@@ -148,6 +148,7 @@ class TTSHandler:
         self.response_builder = ResponseBuilder()
         self.pending_tasks = {} # 存储每个 session 的待处理任务
         self.audio_tasks_status = {}
+        self.text_processing_locks = {} # 防止并行处理 chunk 导致乱序
     
     # request: CONNECT_REQUEST / response: CONNECT_RESPONSE
     async def handle_connect_request(self, websocket: WebSocket, message: dict) -> dict:
@@ -308,12 +309,19 @@ class TTSHandler:
                     ErrorCode.INVALID_SESSION,
                     "Invalid session"
                 )
+
+            # 确保会话有处理锁
+            if session_id not in self.text_processing_locks:
+                self.text_processing_locks[session_id] = asyncio.Lock()
+                
+            # 初始化任务跟踪
             if session_id not in self.pending_tasks:
                 self.pending_tasks[session_id] = []
             if session_id not in self.audio_tasks_status:
                 self.audio_tasks_status[session_id] = {
                     "received_texts": 0,
-                    "completed_texts": 0
+                    "completed_texts": 0,
+                    "current_text_index": 0  # 新增：当前处理的文本索引
                 }
             
             self.audio_tasks_status[session_id]["received_texts"] += 1
@@ -379,35 +387,63 @@ class TTSHandler:
           
                 async def process_audio():
                     try:
-                        chunk_index = 0
-                        for chunk in inference_generator:
-                            chunk_index += 1
-                            audio_data = convert_to_format(
-                                chunk["tts_speech"],
-                                params.output_format,
-                                model.cosyvoice_model.sample_rate,
-                                params
-                            )
+                        # 等待轮到处理当前文本
+                        async with self.text_processing_locks[session_id]:
+                            expected_index = self.audio_tasks_status[session_id]["current_text_index"] + 1
+                            if current_text_index != expected_index:
+                                logger.warning(f"Waiting for text {expected_index}, current is {current_text_index}")
+                                return
+                            
+                            self.audio_tasks_status[session_id]["current_text_index"] = current_text_index
+                            logger.info(f"Processing text {current_text_index}: {params.text}")
+                            
+                            chunk_index = 0
+                            for chunk in inference_generator:
+                                # if websocket._closed:
+                                #     logger.warning("WebSocket connection closed, stopping audio processing")
+                                #     break
+                                    
+                                chunk_index += 1
+                                try:
+                                    audio_data = convert_to_format(
+                                        chunk["tts_speech"],
+                                        params.output_format,
+                                        model.cosyvoice_model.sample_rate,
+                                        params
+                                    )
 
-                            await websocket.send_json(
-                                self.response_builder.create_response(
-                                    message=message,
-                                    message_type="AUDIO_RESPONSE",
-                                    payload={
-                                        "session_id": session_id,
-                                        "text_index": current_text_index,  # 添加文本索引
-                                        "chunk_index": chunk_index,
-                                        "audio_data": base64.b64encode(audio_data).decode('utf-8')
-                                    }
-                                )
-                            )
+                                    try:
+                                        await websocket.send_json(
+                                            self.response_builder.create_response(
+                                                message=message,
+                                                message_type="AUDIO_RESPONSE",
+                                                payload={
+                                                    "session_id": session_id,
+                                                    "text_index": current_text_index,
+                                                    "chunk_index": chunk_index,
+                                                    "audio_data": base64.b64encode(audio_data).decode('utf-8')
+                                                }
+                                            )
+                                        )
+                                    except RuntimeError:
+                                        logger.warning("WebSocket connection closed while sending")
+                                        break
+                                    except Exception as e:
+                                        logger.error(f"Error sending audio chunk: {e}")
+                                        continue
+
+                                    await asyncio.sleep(0.01)
+                                    
+                                except Exception as e:
+                                    logger.error(f"Error processing audio chunk {chunk_index}: {e}")
+                                    continue
+                                    
+                            self.audio_tasks_status[session_id]["completed_texts"] += 1
+                            logger.info(f"Completed audio generation for text {current_text_index} "
+                                        f"(Completed: {self.audio_tasks_status[session_id]['completed_texts']})")
                     except Exception as e:
                         logger.error(f"Error in audio processing: {e}")
                         raise
-                    finally:
-                        self.audio_tasks_status[session_id]["completed_texts"] += 1
-                        logger.info(f"Completed audio generation for text {current_text_index} "
-                                    f"(Completed: {self.audio_tasks_status[session_id]['completed_texts']})")
 
                 # 创建任务并存储
                 task = asyncio.create_task(process_audio())
@@ -547,6 +583,16 @@ class TTSHandler:
                     del self.pending_tasks[session_id]
                     logger.info("Task cleanup completed")
 
+                # 清理处理锁
+                if session_id in self.text_processing_locks:
+                    del self.text_processing_locks[session_id]
+                    logger.info("Text processing lock cleaned up")
+
+                # 清理状态
+                if session_id in self.audio_tasks_status:
+                    del self.audio_tasks_status[session_id]
+                    logger.info("Audio tasks status cleaned up")
+
                 # 关闭会话
                 await self.session_manager.close_session(session_id)
                 
@@ -653,8 +699,6 @@ class TTSHandler:
                 pass
             except Exception as e:
                 logger.error(f"Error cancelling task: {e}")
-
-        
  
 
 CONNECTION_TIMEOUT_MINUTES = int(os.getenv('CONNECTION_TIMEOUT_MINUTES', 30))
@@ -745,4 +789,3 @@ async def websocket_tts(websocket: WebSocket):
             except Exception as cleanup_error:
                 logger.error(f"Error during cleanup: {str(cleanup_error)}")
                 logger.error(traceback.format_exc())
-                
