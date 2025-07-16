@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 import model
 from utils import convert_to_format, download_audio_file, cleanup_temp_file, ResponseBuilder, AudioProcessingError, validate_message, ErrorCode
 from cosyvoice.utils.file_utils import load_wav
+from spk import speakers
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -338,18 +339,52 @@ class TTSHandler:
                 )
                 
             try:
-                if params.prompt_audio_path.startswith(('http://', 'https://')):
-                    temp_file = await download_audio_file(params.prompt_audio_path)
-                    prompt_speech = load_wav(temp_file, 16000)
-                else:
-                    prompt_speech = load_wav(params.prompt_audio_path, 16000)
+                if params.zero_shot_spk_id != '':
+                    if params.zero_shot_spk_id not in speakers:
+                        logger.error(f"Speaker ID does not exist: {params.zero_shot_spk_id}")
+                        error_response = self.response_builder.create_error_response(
+                            message,
+                            ErrorCode.INVALID_PARAMS,
+                            f"Speaker ID does not exist: {params.zero_shot_spk_id}"
+                        )
+                        await websocket.send_json(error_response)
+                        return None
+                try:
+                    if params.prompt_audio_path.startswith(('http://', 'https://')):
+                        temp_file = await download_audio_file(params.prompt_audio_path)
+                        prompt_speech = load_wav(temp_file, 16000)
+                    else:
+                        if not os.path.exists(params.prompt_audio_path):
+                            error_response = self.response_builder.create_error_response(
+                                message,
+                                ErrorCode.INVALID_PARAMS,
+                                f"Prompt audio file not found: {params.prompt_audio_path}"
+                            )
+                            await websocket.send_json(error_response)
+                            return None
+                        prompt_speech = load_wav(params.prompt_audio_path, 16000)
+
+                except Exception as e:
+                    error_response = self.response_builder.create_error_response(
+                        message,
+                        ErrorCode.INVALID_PARAMS,
+                        "Failed to load prompt audio",
+                        str(e)
+                    )
+                    await websocket.send_json(error_response)
+                    return None
+
             except Exception as e:
-                return self.response_builder.create_error_response(
+                logger.error(f"Unexpected error in parameter validation: {str(e)}")
+                error_response = self.response_builder.create_error_response(
                     message,
-                    ErrorCode.INVALID_PARAMS,
-                    "Failed to load prompt audio",
+                    ErrorCode.INTERNAL_ERROR,
+                    "Internal server error during parameter validation",
                     str(e)
                 )
+                await websocket.send_json(error_response)
+                return None
+
                 
             try:
                 if params.mode == "zero_shot":
@@ -432,7 +467,7 @@ class TTSHandler:
                                         logger.error(f"Error sending audio chunk: {e}")
                                         continue
 
-                                    await asyncio.sleep(0.01)
+                                    await asyncio.sleep(0)
                                     
                                 except Exception as e:
                                     logger.error(f"Error processing audio chunk {chunk_index}: {e}")
@@ -751,6 +786,9 @@ async def websocket_tts(websocket: WebSocket):
                     response = await tts_handler.handle_synthesis_start(websocket, message)
                 elif message_type == "TEXT_REQUEST":
                     response = await tts_handler.handle_text_request(websocket, message)
+                    if response is None:  # 已经处理完了（发送了错误响应）
+                        continue
+                    # 否则继续正常处理
                     continue
                 elif message_type == "SYNTHESIS_END":
                     response = await tts_handler.handle_synthesis_end(websocket, message)
