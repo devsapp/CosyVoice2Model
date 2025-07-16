@@ -712,6 +712,7 @@ class TTSHandler:
                     logger.error(traceback.format_exc())
 
             # 断开连接
+            # TODO: 待通过多场景验证是否需要直接断开 websocket
             try:
                 await self.connection_manager.disconnect(websocket)
                 logger.info("Disconnected from connection manager")
