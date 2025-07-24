@@ -1,4 +1,3 @@
-
 import asyncio
 from datetime import datetime, timedelta
 import json
@@ -294,6 +293,7 @@ class TTSHandler:
     async def handle_text_request(self, websocket: WebSocket, message: dict) -> dict:
         temp_file = None
         try:
+            # 基本验证
             is_valid, error = validate_message(message, self.supported_versions)
             if not is_valid:
                 return self.response_builder.create_error_response(
@@ -321,8 +321,7 @@ class TTSHandler:
             if session_id not in self.audio_tasks_status:
                 self.audio_tasks_status[session_id] = {
                     "received_texts": 0,
-                    "completed_texts": 0,
-                    "current_text_index": 0  # 新增：当前处理的文本索引
+                    "completed_texts": 0
                 }
             
             self.audio_tasks_status[session_id]["received_texts"] += 1
@@ -374,80 +373,64 @@ class TTSHandler:
                     await websocket.send_json(error_response)
                     return None
 
-            except Exception as e:
-                logger.error(f"Unexpected error in parameter validation: {str(e)}")
-                error_response = self.response_builder.create_error_response(
-                    message,
-                    ErrorCode.INTERNAL_ERROR,
-                    "Internal server error during parameter validation",
-                    str(e)
-                )
-                await websocket.send_json(error_response)
-                return None
-
-                
-            try:
-                if params.mode == "zero_shot":
-                    inference_generator = model.cosyvoice_model.inference_zero_shot(
-                        params.text,
-                        params.prompt_text,
-                        prompt_speech,
-                        stream=True,
-                        speed=params.speed,
-                        zero_shot_spk_id=params.zero_shot_spk_id
-                    )
-                elif params.mode == "cross_lingual":
-                    inference_generator = model.cosyvoice_model.inference_cross_lingual(
-                        params.text,
-                        prompt_speech,
-                        stream=True,
-                        speed=params.speed,
-                        zero_shot_spk_id=params.zero_shot_spk_id
-                    )
-                elif params.mode == "instruct2":
-                    inference_generator = model.cosyvoice_model.inference_instruct2(
-                        params.text,
-                        params.instruct_text or "",
-                        prompt_speech,
-                        stream=True,
-                        speed=params.speed,
-                        zero_shot_spk_id=params.zero_shot_spk_id
-                    )
-                else:
-                    return self.response_builder.create_error_response(
-                            message,
-                            ErrorCode.INVALID_PARAMS,
-                            f"Unsupported mode: {params.mode}"
-                        )
-          
                 async def process_audio():
                     try:
-                        # 等待轮到处理当前文本
-                        async with self.text_processing_locks[session_id]:
-                            expected_index = self.audio_tasks_status[session_id]["current_text_index"] + 1
-                            if current_text_index != expected_index:
-                                logger.warning(f"Waiting for text {expected_index}, current is {current_text_index}")
-                                return
-                            
-                            self.audio_tasks_status[session_id]["current_text_index"] = current_text_index
-                            logger.info(f"Processing text {current_text_index}: {params.text}")
-                            
-                            chunk_index = 0
-                            for chunk in inference_generator:
-                                # if websocket._closed:
-                                #     logger.warning("WebSocket connection closed, stopping audio processing")
-                                #     break
-                                    
-                                chunk_index += 1
-                                try:
-                                    audio_data = convert_to_format(
-                                        chunk["tts_speech"],
-                                        params.output_format,
-                                        model.cosyvoice_model.sample_rate,
-                                        params
-                                    )
+                        # 直接开始推理
+                        logger.info(f"Starting inference for session {session_id}, text: {params.text}")
+                        if params.mode == "zero_shot":
+                            inference_generator = await asyncio.to_thread(
+                                model.cosyvoice_model.inference_zero_shot,
+                                params.text,
+                                params.prompt_text,
+                                prompt_speech,
+                                stream=True,
+                                speed=params.speed,
+                                zero_shot_spk_id=params.zero_shot_spk_id
+                            )
+                        elif params.mode == "cross_lingual":
+                            inference_generator = await asyncio.to_thread(
+                                model.cosyvoice_model.inference_cross_lingual,
+                                params.text,
+                                prompt_speech,
+                                stream=True,
+                                speed=params.speed,
+                                zero_shot_spk_id=params.zero_shot_spk_id
+                            )
+                        elif params.mode == "instruct2":
+                            inference_generator = await asyncio.to_thread(
+                                model.cosyvoice_model.inference_instruct2,
+                                params.text,
+                                params.instruct_text or "",
+                                prompt_speech,
+                                stream=True,
+                                speed=params.speed,
+                                zero_shot_spk_id=params.zero_shot_spk_id
+                            )
+                        else:
+                            raise ValueError(f"Unsupported mode: {params.mode}")
+                        logger.info(f"Inference completed for session {session_id}, text: {params.text}")
 
-                                    try:
+                        pending_chunks = {}
+                        next_chunk_index = 1
+
+                        async def process_and_send_chunk(chunk_index, chunk):
+                            nonlocal next_chunk_index
+                            try:
+                                # 处理音频数据
+                                audio_data = await asyncio.to_thread(
+                                    convert_to_format,
+                                    chunk["tts_speech"],
+                                    params.output_format,
+                                    model.cosyvoice_model.sample_rate,
+                                    params
+                                )
+                                
+                                # 存储处理好的chunk
+                                pending_chunks[chunk_index] = audio_data
+                                
+                                # 按顺序发送chunks
+                                async with self.text_processing_locks[session_id]:
+                                    while next_chunk_index in pending_chunks:
                                         await websocket.send_json(
                                             self.response_builder.create_response(
                                                 message=message,
@@ -455,27 +438,34 @@ class TTSHandler:
                                                 payload={
                                                     "session_id": session_id,
                                                     "text_index": current_text_index,
-                                                    "chunk_index": chunk_index,
-                                                    "audio_data": base64.b64encode(audio_data).decode('utf-8')
+                                                    "chunk_index": next_chunk_index,
+                                                    "audio_data": base64.b64encode(
+                                                        pending_chunks[next_chunk_index]
+                                                    ).decode('utf-8')
                                                 }
                                             )
                                         )
-                                    except RuntimeError:
-                                        logger.warning("WebSocket connection closed while sending")
-                                        break
-                                    except Exception as e:
-                                        logger.error(f"Error sending audio chunk: {e}")
-                                        continue
+                                        del pending_chunks[next_chunk_index]
+                                        next_chunk_index += 1
 
-                                    await asyncio.sleep(0)
-                                    
-                                except Exception as e:
-                                    logger.error(f"Error processing audio chunk {chunk_index}: {e}")
-                                    continue
-                                    
-                            self.audio_tasks_status[session_id]["completed_texts"] += 1
-                            logger.info(f"Completed audio generation for text {current_text_index} "
-                                        f"(Completed: {self.audio_tasks_status[session_id]['completed_texts']})")
+                            except Exception as e:
+                                logger.error(f"Error processing chunk {chunk_index}: {e}")
+                                raise
+
+                        # 并行处理所有chunks
+                        tasks = []
+                        for chunk_index, chunk in enumerate(inference_generator, 1):
+                            task = asyncio.create_task(
+                                process_and_send_chunk(chunk_index, chunk)
+                            )
+                            tasks.append(task)
+
+                        # 等待所有chunks完成
+                        await asyncio.gather(*tasks)
+                        
+                        # 更新完成状态
+                        self.audio_tasks_status[session_id]["completed_texts"] += 1
+
                     except Exception as e:
                         logger.error(f"Error in audio processing: {e}")
                         raise
@@ -503,6 +493,8 @@ class TTSHandler:
         finally:
             if temp_file:
                 cleanup_temp_file(temp_file)
+
+
                 
     # request: SYNTHESIS_END / response: SYNTHESIS_END_ACK  
     async def handle_synthesis_end(self, websocket: WebSocket, message: dict) -> dict:

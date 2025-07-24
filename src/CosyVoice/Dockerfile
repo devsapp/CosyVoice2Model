@@ -66,6 +66,9 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     conda run -n ${VENV} pip install ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl && \
     unzip resource.zip -d .
 
+RUN conda run -n ${VENV} pip install numpy==1.24.3
+RUN conda run -n ${VENV} pip install onnxruntime==1.15.1
+
 # 添加 webui.py 脚本
 COPY inference_project /workspace/CosyVoice/inference_project/
 
@@ -74,4 +77,3 @@ COPY inference_project /workspace/CosyVoice/inference_project/
 RUN touch /workspace/CosyVoice/cosyvoice/vllm/__init__.py
 # 设置默认命令
 CMD ["python3", "inference_project/app.py", "--port", "8000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
-# CMD ["python3", "webui.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
